@@ -350,10 +350,11 @@ internal unsafe partial class Composition<TOleServices, TNrbfSerializer, TDataFo
                     result = TryGetIStreamData(dataObject, in request, out data);
                 }
             }
-            catch (Exception e) when (!e.IsCriticalException())
+            catch (Exception e)
+            when (!CoreAppContextSwitches.ClipboardThrowExceptionsForGetAPIs && !e.IsCriticalException())
             {
-                // NotSupported is the typical expected exception. We don't want to throw any exceptions outside
-                // of critical exceptions, to align with legacy behavior and the "Try" semantics of new APIs.
+                // NotSupported is the typical expected exception. Legacy behavior swallows non-critical exceptions,
+                // including failures from IDataObject::GetData.
                 Debug.Assert(e is NotSupportedException, e.Message);
             }
 
@@ -394,6 +395,19 @@ internal unsafe partial class Composition<TOleServices, TNrbfSerializer, TDataFo
             Debug.WriteLineIf(hr == HRESULT.E_UNEXPECTED, "E_UNEXPECTED returned when trying to get clipboard data.");
             Debug.WriteLineIf(hr == HRESULT.COR_E_SERIALIZATION,
                 "COR_E_SERIALIZATION returned when trying to get clipboard data, for example, BinaryFormatter threw SerializationException.");
+            Debug.WriteLineIf(hr == HRESULT.CLIPBRD_E_CANT_OPEN, "CLIPBRD_E_CANT_OPEN returned when trying to get clipboard data. It can happen when clipboard is in locked state by another process.");
+
+            // If GetData failed, don't try to read from the medium - it may contain uninitialized data.
+            // (This can easily happen when the clipboard content changes between QueryGetData and GetData calls.)
+            if (hr.Failed)
+            {
+                if (CoreAppContextSwitches.ClipboardThrowExceptionsForGetAPIs)
+                {
+                    hr.ThrowOnFailure();
+                }
+
+                return false;
+            }
 
             bool result = false;
             try
@@ -409,7 +423,8 @@ internal unsafe partial class Composition<TOleServices, TNrbfSerializer, TDataFo
                 data = default;
                 doNotContinue = true;
             }
-            catch (Exception ex) when (!request.TypedRequest || ex is not NotSupportedException)
+            catch (Exception ex)
+            when (!CoreAppContextSwitches.ClipboardThrowExceptionsForGetAPIs && (!request.TypedRequest || ex is not NotSupportedException))
             {
                 Debug.WriteLine(ex.ToString());
             }
@@ -435,10 +450,19 @@ internal unsafe partial class Composition<TOleServices, TNrbfSerializer, TDataFo
                 tymed = (uint)Com.TYMED.TYMED_ISTREAM
             };
 
-            // Limit the # of exceptions we may throw below.
-            if (dataObject->QueryGetData(formatEtc).Failed
-                || dataObject->GetData(formatEtc, out Com.STGMEDIUM medium).Failed)
+            if (dataObject->QueryGetData(formatEtc).Failed)
             {
+                return false;
+            }
+
+            HRESULT hr = dataObject->GetData(formatEtc, out Com.STGMEDIUM medium);
+            if (hr.Failed)
+            {
+                if (CoreAppContextSwitches.ClipboardThrowExceptionsForGetAPIs)
+                {
+                    hr.ThrowOnFailure();
+                }
+
                 return false;
             }
 
