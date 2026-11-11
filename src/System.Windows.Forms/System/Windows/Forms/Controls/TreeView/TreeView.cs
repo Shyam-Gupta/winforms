@@ -2830,6 +2830,15 @@ public partial class TreeView : Control
                         return;
                     }
 
+                    // While the text of a node is being changed, the native control sends an empty rectangle
+                    // with a window DC (not the double-buffer memory DC). Drawing then flickers, so skip it;
+                    // the real paint follows with a non-empty rectangle.
+                    if (nmtvcd->nmcd.rc.right <= nmtvcd->nmcd.rc.left || nmtvcd->nmcd.rc.bottom <= nmtvcd->nmcd.rc.top)
+                    {
+                        m.ResultInternal = (LRESULT)(nint)PInvoke.CDRF_NOTIFYSUBITEMDRAW;
+                        return;
+                    }
+
                     using (Graphics g = nmtvcd->nmcd.hdc.CreateGraphics())
                     {
                         Rectangle bounds = node.Bounds;
